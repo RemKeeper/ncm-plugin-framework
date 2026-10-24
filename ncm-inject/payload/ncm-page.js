@@ -20,6 +20,22 @@
   }
 
   var HOST_VERSION = H.hostVersion || '0.0.0';
+
+  /* ★ 只允许在**主窗口**出现注入角标。
+   *   实测宿主会开多个 CEF 页面：
+   *     app.html                        ← 主窗口（要显示角标）
+   *     subApp.html?route=pet-desktop   ← 桌宠小窗（不该显示）
+   *   另有桌面歌词等窗口，也一律不显示。
+   *   插件宿主本身仍在各窗口运行（插件可以选择性使用），只有 UI 角标被限制。 */
+  var IS_MAIN_WINDOW = (function () {
+    try {
+      var p = String(location.pathname || "").toLowerCase();
+      var href = String(location.href || "").toLowerCase();
+      if (p.indexOf("subapp.html") >= 0) return false;
+      if (href.indexOf("route=") >= 0) return false;     /* subApp 带 route 参数 */
+      return /\/app\.html$/.test(p) || /\/app\.html(\?|#|$)/.test(href);
+    } catch (e) { return false; }
+  })();
   var PREFIX = '[ncm:' + (H.processType || '?') + ']';
 
   /* ══ 0. 重入保护 ═══════════════════════════════════════════════════════
@@ -271,6 +287,7 @@
       ncmVersion: H.ncmVersion || 'unknown',
       profileDir: H.profileDir || '',
       dataDir: H.dataRoot || ''
+      ,isMainWindow: IS_MAIN_WINDOW
     }
   };
 
@@ -559,6 +576,12 @@
   }
 
   function buildBadge() {
+    /* 只主窗口显示角标；其他窗口（桌宠 / 子应用）直接不建 */
+    if (!IS_MAIN_WINDOW) {
+      removeBadge();
+      log("info", "非主窗口（" + location.pathname + "），跳过注入角标");
+      return;
+    }
     /* 幂等：已经挂在标题栏图标行里就不重建（避免反复追加） */
     var existing = document.getElementById('ncm-inject-badge');
     var bar = document.querySelector("[class*=MiniModeIconBar]");
