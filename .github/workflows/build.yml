@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'build a release (uses commit short sha as tag)'
+        description: 'publish a release (tag = short sha)'
         type: boolean
         default: false
 
@@ -31,53 +31,94 @@ jobs:
         working-directory: ncm-inject
         run: build-ci.bat
 
-      - name: Collect artifact info
-        id: info
+      - name: Determine version
+        id: ver
         shell: pwsh
         run: |
-          $dll = "ncm-inject/build/msimg32.dll"
-          if (-not (Test-Path $dll)) { throw "build output missing: $dll" }
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF -replace 'refs/tags/',''
+          } else {
+            $tag = $env:GITHUB_SHA.Substring(0,7)
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "version tag: $tag"
+
+      - name: Assemble one-click package
+        id: pkg
+        shell: pwsh
+        run: |
+          $tag  = "${{ steps.ver.outputs.tag }}"
+          $name = "ncm-plugin-framework-$tag"
+          $stage = "stage/$name"
+          New-Item -ItemType Directory -Force -Path $stage, "$stage/ncm-inject/build", "$stage/ncm-inject/payload", "$stage/config" | Out-Null
+
+          # 1) 一键脚本
+          Copy-Item package/install.cmd, package/install.ps1, package/uninstall.cmd, package/uninstall.ps1, package/start-devtools.cmd, package/QUICKSTART.txt $stage -Force
+
+          # 2) 注入器 DLL + 页面载荷
+          Copy-Item ncm-inject/build/msimg32.dll "$stage/ncm-inject/build/msimg32.dll" -Force
+          Copy-Item ncm-inject/payload/ncm-page.js "$stage/ncm-inject/payload/ncm-page.js" -Force
+
+          # 3) 示例插件 + 配置样例
+          Copy-Item plugins "$stage/plugins" -Recurse -Force
+          Copy-Item config/broadcast.example.json "$stage/config/broadcast.example.json" -Force
+
+          # 4) 校验和
+          $dll  = "$stage/ncm-inject/build/msimg32.dll"
           $hash = (Get-FileHash $dll -Algorithm SHA256).Hash
           $size = (Get-Item $dll).Length
-          "sha256=$hash"   >> $env:GITHUB_OUTPUT
-          "size=$size"     >> $env:GITHUB_OUTPUT
-          "size_kb=$([math]::Round($size/1KB,1))" >> $env:GITHUB_OUTPUT
-          Write-Host "msimg32.dll: $size bytes, sha256=$hash"
+          @(
+            "NCM Plugin Framework $tag",
+            "built from: $env:GITHUB_SHA",
+            "msimg32.dll size: $size bytes",
+            "msimg32.dll sha256: $hash"
+          ) | Set-Content "$stage/SHA256.txt" -Encoding utf8
+
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$size"   >> $env:GITHUB_OUTPUT
+          "name=$name"   >> $env:GITHUB_OUTPUT
+
+          # 5) 打包（zip 内保留顶层目录）
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zip = "dist/$name.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
+          $zipKb = [math]::Round((Get-Item $zip).Length / 1KB, 1)
+          Write-Host "package: $zip ($zipKb KB)"
+          Write-Host "dll sha256: $hash"
+          Get-ChildItem -Recurse $stage | Select-Object -First 40 FullName | Format-Table -HideTableHeaders
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: msimg32-${{ github.sha }}
-          path: ncm-inject/build/msimg32.dll
+          name: ${{ steps.pkg.outputs.name }}
+          path: dist/*.zip
           if-no-files-found: error
-
-      - name: Rename for release
-        if: startsWith(github.ref, 'refs/tags/') || inputs.release
-        shell: pwsh
-        run: |
-          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF -replace 'refs/tags/','' } else { $env:GITHUB_SHA.Substring(0,7) }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item ncm-inject/build/msimg32.dll "dist/msimg32-$tag.dll"
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-        id: rename
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/') || inputs.release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.rename.outputs.tag }}
-          name: ncm-plugin-framework ${{ steps.rename.outputs.tag }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ncm-plugin-framework ${{ steps.ver.outputs.tag }}
           generate_release_notes: true
           body: |
-            Automated build of `msimg32.dll` (the injector / plugin host loader).
+            **一键包**：下载 zip → 解压 → 双击 `install.cmd`（UAC 选「是」）→ 完成。
 
-            - file: `msimg32-${{ steps.rename.outputs.tag }}.dll` (rename to `msimg32.dll` when deploying)
-            - sha256: `${{ steps.info.outputs.sha256 }}`
-            - size: `${{ steps.info.outputs.size_kb }}` KB
-            - built from: `${{ github.sha }}`
+            包内含：
+            - `msimg32.dll` 注入器（已编译）
+            - 页面载荷 `ncm-page.js`
+            - 示例插件：Custom CSS / LAN Broadcast / Probe
+            - `install.cmd` / `uninstall.cmd` / `start-devtools.cmd`
+            - `QUICKSTART.txt`（中文使用说明）、`SHA256.txt`
 
-            Deploy: place it next to `cloudmusic.exe` (back up the original `msimg32.dll` first),
-            then start NetEase Cloud Music.
-          files: dist/msimg32-${{ steps.rename.outputs.tag }}.dll
+            构建信息：
+            - `msimg32.dll` sha256：`${{ steps.pkg.outputs.sha256 }}`
+            - 大小：`${{ steps.pkg.outputs.size }}` 字节
+            - 提交：`${{ github.sha }}`
+
+            安装会**自动备份**原始 `msimg32.dll` 到 `%LOCALAPPDATA%\NCMPlugin\backup\`，
+            卸载时由 `uninstall.cmd` 恢复。
+          files: dist/*.zip
           draft: false
           prerelease: false

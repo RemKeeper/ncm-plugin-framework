@@ -1,0 +1,43 @@
+NCM Plugin Framework —— 一键包使用说明
+=====================================
+
+【安装】
+  1) 双击  install.cmd
+  2) 弹出 UAC 时选「是」（需要管理员权限写 Program Files）
+  3) 脚本会自动找到网易云目录，备份原始 msimg32.dll，然后装好：
+       - 代理 DLL      → <网易云目录>\msimg32.dll
+       - 页面载荷      → %LOCALAPPDATA%\NCMPlugin\payload
+       - 示例插件      → %LOCALAPPDATA%\NCMPlugin\plugins
+  4) 结束时询问是否启动网易云，回车即可
+
+【确认成功】
+  网易云窗口右上角会出现一个插件图标（点击打开插件管理面板）。
+  日志位于： %LOCALAPPDATA%\NCMPlugin\inject-*.log
+
+【插件管理】
+  点右上角图标：
+    - 查看插件状态（已载入 / 已禁用 / 出错）
+    - 启用 / 禁用（持久化到 data\disabled.json）
+    - 重载（改完插件脚本后点它即可生效）
+
+【自定义 CSS】
+  设置 → 「自定义 CSS」→ 编辑后点「保存并应用」。
+  保存位置： %LOCALAPPDATA%\NCMPlugin\custom.css
+
+【局域网投送（可选）】
+  配置： %LOCALAPPDATA%\NCMPlugin\broadcast.json（安装时已放样例，默认端口 8790）
+  SSE：  http://127.0.0.1:8790/events     封面： http://127.0.0.1:8790/cover
+
+【开发：DevTools】
+  用 start-devtools.cmd 启动网易云，然后用 Chrome/Edge 打开
+      http://127.0.0.1:9222
+  即可调试页面（控制台、元素、网络、ncm.* API 都可用）。
+
+【卸载】
+  双击 uninstall.cmd（同样需要管理员权限）：
+    - 恢复备份的原始 msimg32.dll
+    - 移除 payload / plugins
+    - 保留插件数据目录 data（不需要可手动删 %LOCALAPPDATA%\NCMPlugin）
+
+【注意】
+  仅用于个人学习与技术研究。网易云升级后可能失效（注入点与版本相关）。

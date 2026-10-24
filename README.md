@@ -172,6 +172,29 @@ tools\start-with-devtools.cmd
 
 ---
 
+## 一键包（Release）
+
+从 [Releases](https://github.com/RemKeeper/ncm-plugin-framework/releases) 下载 `ncm-plugin-framework-<version>.zip`：
+
+1. 解压任意目录
+2. 双击 `install.cmd`（UAC 选「是」）
+3. 脚本自动定位网易云目录、**备份**原始 `msimg32.dll`，并安装 DLL + 载荷 + 示例插件
+4. 结束时可直接启动网易云
+
+包内文件：
+
+```
+install.cmd / install.ps1        一键安装（自动找目录、备份、部署）
+uninstall.cmd / uninstall.ps1    卸载（恢复原始 DLL）
+start-devtools.cmd               带远程调试端口启动
+QUICKSTART.txt                   中文使用说明
+SHA256.txt                       构建信息与校验和
+ncm-inject/build/msimg32.dll     注入器
+ncm-inject/payload/ncm-page.js   页面载荷
+plugins/                         示例插件
+config/broadcast.example.json    局域网投送配置样例
+```
+
 ## CI / Release
 
 `.github/workflows/build.yml` 在 `windows-latest` 上用 MSVC 自动编译 `msimg32.dll`：
