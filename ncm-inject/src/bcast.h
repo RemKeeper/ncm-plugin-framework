@@ -17,6 +17,12 @@ int  ncm_bcast_port(void);
 /** 通知 SSE 客户端：插件变更，请热重载。 */
 void ncm_bcast_notify_reload(void);
 
+/** 往所有 SSE 客户端发一帧原始内容（长度由调用方算好）。 */
+void ncm_bcast_raw(const char *frame, int len);
+
+/** 桌宠交互事件（down / dragstart / drag / drop / click）。 */
+void ncm_bcast_pet_event(const char *type, int x, int y);
+
 #if defined(__cplusplus)
 }
 #endif

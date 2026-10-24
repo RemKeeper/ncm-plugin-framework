@@ -41,6 +41,27 @@ pwsh -File tools/fetch-pet-assets.ps1
 
 名字不符合约定也能跑：没有待机片段时会把前几个片段当待机。
 
+## 点击与拖拽（原生旁路）
+
+**页面收不到鼠标按键**（实测 OSR 只转发 mousemove），所以交互由原生 `pet_hook.c`
+子类化桌宠窗口的 WndProc 采集，经 bcast 的 SSE（`event: pet`）推给本插件：
+
+| 事件 | 插件行为 |
+|---|---|
+| `click` | 播 `点击回应-*` + 随机气泡 |
+| `dragstart` | 播 `被鼠标拖拽悬空反馈`（循环）+ 气泡 |
+| `drag` | 舞台按位移 `rotate(±12deg)` 跟手倾斜 |
+| `drop` | 清倾斜、回待机 |
+
+### 跟歌反应
+
+订阅同一条 SSE 的 `nowplaying`（由 lan-broadcast 插件推送）：换歌时播一个随机短动作，
+气泡报歌名。
+
+### 省电
+
+窗口不可见时（`visibilitychange`）暂停视频，回到前台继续。
+
 ## 互动
 
 - 左键点击 → 播一个 `点击回应-*` + 随机气泡台词

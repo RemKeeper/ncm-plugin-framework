@@ -418,6 +418,7 @@ static DWORD WINAPI listen_thread(LPVOID param)
         SOCKET c = accept(srv, NULL, NULL);
         if (c == INVALID_SOCKET) break;
         HANDLE h = CreateThread(NULL, 0, conn_thread, (LPVOID)(uintptr_t)c, 0, NULL);
+        { DWORD tmo = 250; setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tmo, sizeof(tmo)); }
         if (h) CloseHandle(h);
         else closesocket(c);
     }
@@ -473,4 +474,31 @@ void ncm_bcast_notify_reload(void)
         }
     }
     LeaveCriticalSection(&g_lock);
+}
+
+/* 通用广播：把已经拼好的 SSE 帧发给所有客户端（发不出去就踢掉）。
+ * 调用方可能是 UI 线程（宠物窗口 WndProc），所以上面给客户端设了 250ms 发送超时，
+ * 免得某个卡住的客户端把界面拖死。 */
+void ncm_bcast_raw(const char *frame, int len)
+{
+    if (!frame || len <= 0) return;
+    EnterCriticalSection(&g_lock);
+    for (int i = g_client_count - 1; i >= 0; i--) {
+        if (send(g_clients[i], frame, len, 0) <= 0) {
+            closesocket(g_clients[i]);
+            g_clients[i] = g_clients[g_client_count - 1];
+            g_client_count--;
+        }
+    }
+    LeaveCriticalSection(&g_lock);
+}
+
+/* 桌宠交互事件：down / dragstart / drag / drop / click（由 pet_hook.c 触发） */
+void ncm_bcast_pet_event(const char *type, int x, int y)
+{
+    char msg[192];
+    int n = sprintf_s(msg, sizeof(msg),
+                      "event: pet\ndata: {\"type\":\"%s\",\"x\":%d,\"y\":%d}\n\n",
+                      type ? type : "", x, y);
+    ncm_bcast_raw(msg, n);
 }

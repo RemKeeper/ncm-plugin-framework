@@ -23,6 +23,7 @@
 #include "resdump.h"
 #include "probe_server.h"
 #include "bcast.h"
+#include "pet_hook.h"
 #include "devtools.h"
 #include "plugins.h"
 #include "host.h"
@@ -239,6 +240,7 @@ static unsigned __stdcall worker(void *arg)
              *   一次追加会被它覆盖掉，所以这里持续补齐，缺了才补、补了才记日志。 */
             if (strcmp(role, "Main") == 0) {
                 ncm_bcast_start();
+        ncm_pet_hook_start();   /* 桌宠窗口的点击/拖拽旁路 */
                 /* 收尾：不再改动宿主窗口标题（原先会追加 " [ncm-inject]"） */
                 /* 收尾：不再创建原生浮窗，UI 统一由页面内右上角小角标承担。
                  * 保留代码路径便于排查，开关置 0 即关闭。 */
