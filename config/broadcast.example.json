@@ -1,0 +1,8 @@
+{
+  "enable": true,
+  "port": 8790,
+  "bind": "",
+  "windowBefore": 4,
+  "windowAfter": 8,
+  "coverSize": 512
+}

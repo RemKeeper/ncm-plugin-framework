@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "name": "Custom CSS",
+  "slug": "custom-css.plugin",
+  "version": "1.0.0",
+  "author": "ncm-inject",
+  "description": "在设置界面里增加「自定义 CSS」面板：实时编辑、立即生效、本地持久化，并内置 DevTools 入口提示",
+
+  "ncm_version_req": ">=3.0.0 <4",
+  "ncm3Compatible": true,
+
+  "targets": ["main", "renderer"],
+  "load_priority": 20,
+
+  "startup_script": "startup_script.js",
+  "native_plugin": "",
+
+  "permissions": ["log"],
+
+  "injects": {},
+  "hijacks": {}
+}

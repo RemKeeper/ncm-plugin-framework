@@ -1,0 +1,23 @@
+# 构建产物
+build/
+*.obj
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.exp
+
+# 日志与临时
+*.log
+*.tmp
+*.bak
+
+# 编辑器
+.vs/
+.vscode/
+.idea/
+
+# 运行时数据
+data/
+plugins.disabled/

@@ -1,0 +1,8 @@
+; MSIMG32 导出转发表（与真身 msimg32.dll 的 5 个导出一一对应）
+LIBRARY MSIMG32
+EXPORTS
+    vSetDdrawflag   = AheadLib_vSetDdrawflag   @1
+    AlphaBlend      = AheadLib_AlphaBlend      @2
+    DllInitialize   = AheadLib_DllInitialize   @3
+    GradientFill    = AheadLib_GradientFill    @4
+    TransparentBlt  = AheadLib_TransparentBlt  @5

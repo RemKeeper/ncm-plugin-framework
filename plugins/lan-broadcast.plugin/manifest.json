@@ -1,0 +1,23 @@
+{
+  "manifest_version": 2,
+  "name": "LAN Broadcast",
+  "slug": "lan-broadcast.plugin",
+  "version": "1.0.0",
+  "author": "ncm-inject",
+  "description": "把当前播放的封面/歌词/播放状态通过 SSE 推送到局域网，协议对齐 go-musicfox 的 broadcast（/events + /cover）",
+
+  "ncm_version_req": ">=3.0.0 <4",
+  "ncm3Compatible": true,
+
+  "targets": ["main", "renderer"],
+  "load_priority": 10,
+
+  "startup_script": "startup_script.js",
+  "native_plugin": "",
+
+  "permissions": ["log"],
+
+  "injects": {},
+
+  "hijacks": {}
+}
