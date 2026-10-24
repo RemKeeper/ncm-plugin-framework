@@ -169,3 +169,21 @@ tools\start-with-devtools.cmd
 - BetterNCM v2 — 插件规范（`manifest.json` 字段、`injects`/`hijacks`）与宿主 API 形态的参考
 
 本项目为独立实现，未包含上述项目的代码。
+
+---
+
+## CI / Release
+
+`.github/workflows/build.yml` 在 `windows-latest` 上用 MSVC 自动编译 `msimg32.dll`：
+
+- **打 tag**（`v*`）→ 自动构建并发布到 **Releases**（附带 sha256 / 大小 / 提交号）
+- **手动触发**（Actions → build → Run workflow）→ 仅产出 artifact；勾选 `release` 则用短 SHA 作为 tag 发布
+
+本地 CI 等价构建（需要已配置 MSVC 环境）：
+
+```bat
+cd ncm-inject
+build-ci.bat
+```
+
+发布产物是 `msimg32-<tag>.dll`，部署时改名为 `msimg32.dll` 放到 `cloudmusic.exe` 同目录。
