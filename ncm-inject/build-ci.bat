@@ -19,7 +19,7 @@ echo === assemble msimg32 trampolines ===
 ml64 /nologo /c /Fo build\proxy_asm.obj src\proxy_msimg32.asm || goto :fail_asm
 
 echo === compile sources ===
-for %%F in (util plugins host inject mitm overlay ihook resdump probe_server bcast devtools proxy dllmain) do (
+for %%F in (util plugins host inject mitm overlay ihook resdump probe_server bcast devtools pet_hook proxy dllmain) do (
   echo   - %%F.c
   cl %CFLAGS% /Fo:build\%%F.obj src\%%F.c || goto :fail_compile
 )
@@ -28,7 +28,7 @@ echo === link msimg32.dll ===
 link /nologo /DLL /OUT:build\msimg32.dll /DEF:src\proxy_msimg32.def ^
      build\util.obj build\plugins.obj build\host.obj build\inject.obj build\mitm.obj ^
      build\overlay.obj build\ihook.obj build\resdump.obj build\probe_server.obj ^
-     build\bcast.obj build\devtools.obj build\proxy.obj build\proxy_asm.obj ^
+     build\bcast.obj build\devtools.obj build\pet_hook.obj build\proxy.obj build\proxy_asm.obj ^
      build\dllmain.obj %LIBS% || goto :fail_link
 
 if not exist build\msimg32.dll goto :fail_link

@@ -31,7 +31,7 @@ ml64 /nologo /c /Fo build\proxy_asm.obj src\proxy_msimg32.asm
 if errorlevel 1 goto :fail_ml
 
 echo === compile sources ===
-for %%F in (util plugins host inject mitm overlay ihook resdump probe_server bcast devtools proxy dllmain) do (
+for %%F in (util plugins host inject mitm overlay ihook resdump probe_server bcast devtools pet_hook proxy dllmain) do (
   echo   - %%F.c
   cl %CFLAGS% /Fo:build\%%F.obj src\%%F.c
   if errorlevel 1 goto :fail_cl
@@ -39,7 +39,7 @@ for %%F in (util plugins host inject mitm overlay ihook resdump probe_server bca
 
 echo === link msimg32.dll ===
 link /nologo /DLL /OUT:build\msimg32.dll /DEF:src\proxy_msimg32.def ^
-     build\util.obj build\plugins.obj build\host.obj build\inject.obj build\mitm.obj build\overlay.obj build\ihook.obj build\resdump.obj build\probe_server.obj build\bcast.obj build\devtools.obj build\proxy.obj build\proxy_asm.obj build\dllmain.obj ^
+     build\util.obj build\plugins.obj build\host.obj build\inject.obj build\mitm.obj build\overlay.obj build\ihook.obj build\resdump.obj build\probe_server.obj build\bcast.obj build\devtools.obj build\pet_hook.obj build\proxy.obj build\proxy_asm.obj build\dllmain.obj ^
      %LIBS%
 if errorlevel 1 goto :fail_link
 
