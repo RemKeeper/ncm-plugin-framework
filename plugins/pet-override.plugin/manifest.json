@@ -1,0 +1,13 @@
+{
+  "manifest_version": 2,
+  "name": "DSH Pet (override)",
+  "slug": "pet-override",
+  "version": "1.0.0",
+  "author": "ncm-inject",
+  "description": "用 dsh-pet 的 webm 动画接管网易云桌宠：隐藏原生宠物，改用自己的待机/点击/随机动作池。素材放在 data/pet-override/assets/ 下，自动发现。",
+  "ncm_version_req": ">=3.0.0 <4",
+  "ncm3Compatible": true,
+  "startup_script": "startup_script.js",
+  "injects": {},
+  "hijacks": {}
+}

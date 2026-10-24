@@ -275,6 +275,126 @@ static void handle_client(SOCKET s)
         closesocket(s);
         return;
     }
+    /* ── 插件静态资源（二进制）：GET /asset?path=<rel> ────────────────────
+     * 与 /fs 共用沙箱根 %LOCALAPPDATA%\NCMPlugin\data，但返回原始字节 + 正确 MIME，
+     * 供页面里的 <video>/<img> 直接引用：
+     *   <video src="http://127.0.0.1:38021/asset?path=pet-override/assets/x.webm">
+     * 支持 Range（Chrome 播放视频会发 "Range: bytes=N-"），返回 206。 */
+    if (strncmp(buf, "GET /asset", 10) == 0) {
+        const char *q = strstr(buf, "?path=");
+        char rel[1024] = {0};
+        if (q) {
+            q += 6;
+            int i = 0;
+            while (*q && *q != ' ' && *q != '&' && i < (int)sizeof(rel) - 1) {
+                if (*q == '%' && q[1] && q[2]) {
+                    int hi = (q[1] >= '0' && q[1] <= '9') ? q[1] - '0' : ((q[1] | 32) - 'a' + 10);
+                    int lo = (q[2] >= '0' && q[2] <= '9') ? q[2] - '0' : ((q[2] | 32) - 'a' + 10);
+                    rel[i++] = (char)((hi << 4) | lo);
+                    q += 3;
+                } else {
+                    rel[i++] = (*q == '/') ? '\\' : *q;
+                    q++;
+                }
+            }
+            rel[i] = 0;
+        }
+        int safe = (rel[0] != 0) && (rel[0] != '\\') && (strstr(rel, "..") == NULL) && (rel[1] != ':');
+
+        wchar_t root[MAX_PATH] = {0};
+        {
+            const char *la = getenv("LOCALAPPDATA");
+            wchar_t wla[MAX_PATH] = {0};
+            if (la) MultiByteToWideChar(CP_UTF8, 0, la, -1, wla, MAX_PATH);
+            _snwprintf_s(root, MAX_PATH, _TRUNCATE, L"%s\\NCMPlugin\\data", wla);
+        }
+        wchar_t full[MAX_PATH * 2] = {0};
+        if (safe && root[0]) {
+            wchar_t wrel[1024];
+            MultiByteToWideChar(CP_UTF8, 0, rel, -1, wrel, 1024);
+            _snwprintf_s(full, _countof(full), _TRUNCATE, L"%s\\%s", root, wrel);
+        }
+
+        const char *mime = "application/octet-stream";
+        {
+            size_t n = strlen(rel);
+            const char *e = n > 4 ? rel + n - 4 : rel;
+            if (_stricmp(e, ".js") == 0) mime = "application/javascript; charset=utf-8";
+            else if (_stricmp(e, ".json") == 0) mime = "application/json; charset=utf-8";
+            else if (_stricmp(e, ".css") == 0) mime = "text/css; charset=utf-8";
+            else if (_stricmp(e, ".png") == 0) mime = "image/png";
+            else if (_stricmp(e, ".jpg") == 0 || _stricmp(e, ".jpeg") == 0) mime = "image/jpeg";
+            else if (_stricmp(e, ".gif") == 0) mime = "image/gif";
+            else if (_stricmp(e, ".webp") == 0) mime = "image/webp";
+            else if (_stricmp(e, ".wav") == 0) mime = "audio/wav";
+            else if (_stricmp(e, ".mp3") == 0) mime = "audio/mpeg";
+            else if (_stricmp(e, ".mp4") == 0) mime = "video/mp4";
+            else if (n > 5 && _stricmp(rel + n - 5, ".webm") == 0) mime = "video/webm";
+        }
+
+        int status = 404;
+        char hdr[512];
+        int hn = 0;
+        HANDLE h = INVALID_HANDLE_VALUE;
+        LARGE_INTEGER sz; sz.QuadPart = 0;
+        if (safe && full[0]) {
+            h = CreateFileW(full, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE && GetFileSizeEx(h, &sz) && sz.QuadPart >= 0) status = 200;
+        }
+
+        if (status == 404) {
+            const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                             "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+            send(s, nf, (int)strlen(nf), 0);
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            closesocket(s);
+            return;
+        }
+
+        long long total_sz = sz.QuadPart;
+        long long start = 0, end = total_sz - 1;
+        const char *rg = strstr(buf, "Range: bytes=");
+        if (!rg) rg = strstr(buf, "range: bytes=");
+        if (rg) {
+            rg += 13;
+            start = _strtoi64(rg, NULL, 10);
+            if (start < 0 || start >= total_sz) start = 0;
+            int is_partial = 1;
+            if (!is_partial) { }
+            LARGE_INTEGER li; li.QuadPart = start;
+            SetFilePointerEx(h, li, NULL, FILE_BEGIN);
+            hn = sprintf_s(hdr, sizeof(hdr),
+                           "HTTP/1.1 206 Partial Content\r\nContent-Type: %s\r\n"
+                           "Content-Range: bytes %lld-%lld/%lld\r\n"
+                           "Content-Length: %lld\r\nAccept-Ranges: bytes\r\n"
+                           "Cache-Control: max-age=3600\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                           mime, start, end, total_sz, end - start + 1);
+        } else {
+            hn = sprintf_s(hdr, sizeof(hdr),
+                           "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\n"
+                           "Accept-Ranges: bytes\r\nCache-Control: max-age=3600\r\n"
+                           "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                           mime, total_sz);
+        }
+        send(s, hdr, hn, 0);
+
+        {
+            char chunk[65536];
+            long long remain = end - start + 1;
+            while (remain > 0) {
+                DWORD want = (DWORD)(remain > (long long)sizeof(chunk) ? (long long)sizeof(chunk) : remain);
+                DWORD rd = 0;
+                if (!ReadFile(h, chunk, want, &rd, NULL) || rd == 0) break;
+                send(s, chunk, (int)rd, 0);
+                remain -= rd;
+            }
+        }
+        CloseHandle(h);
+        closesocket(s);
+        return;
+    }
+
     /* ── 插件日志落盘：POST /log（页面 console 之外，方便排查）─────────── */
     if (strncmp(buf, "POST /log", 9) == 0) {
         int clen = 0;

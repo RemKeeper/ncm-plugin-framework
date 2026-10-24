@@ -33,6 +33,13 @@
       http://127.0.0.1:9222
   即可调试页面（控制台、元素、网络、ncm.* API 都可用）。
 
+【桌宠接管（可选）】
+  本包自带 pet-override 插件，可以把网易云自带的桌宠换成 dsh-pet 的动画形象。
+  首次使用需下载素材（约 52 MB）：
+      powershell -ExecutionPolicy Bypass -File fetch-pet-assets.ps1
+  然后重启网易云，宠物即被替换（待机 / 随机小动作 / 点击回应 + 气泡）。
+  想换形象：把其它 .webm 丢进 data\pet-override\assets\ 即可（自动扫描）。
+
 【卸载】
   双击 uninstall.cmd（同样需要管理员权限）：
     - 恢复备份的原始 msimg32.dll

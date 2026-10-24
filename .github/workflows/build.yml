@@ -54,6 +54,7 @@ jobs:
 
           # 1) 一键脚本
           Copy-Item package/install.cmd, package/install.ps1, package/uninstall.cmd, package/uninstall.ps1, package/start-devtools.cmd, package/QUICKSTART.txt $stage -Force
+          Copy-Item tools/fetch-pet-assets.ps1 $stage -Force
 
           # 2) 注入器 DLL + 页面载荷
           Copy-Item ncm-inject/build/msimg32.dll "$stage/ncm-inject/build/msimg32.dll" -Force
@@ -111,6 +112,7 @@ jobs:
             - 示例插件：Custom CSS / LAN Broadcast / Probe
             - `install.cmd` / `uninstall.cmd` / `start-devtools.cmd`
             - `QUICKSTART.txt`（中文使用说明）、`SHA256.txt`
+            - `fetch-pet-assets.ps1`（可选：拉取 dsh-pet 桌宠素材，约 52 MB）
 
             构建信息：
             - `msimg32.dll` sha256：`${{ steps.pkg.outputs.sha256 }}`
