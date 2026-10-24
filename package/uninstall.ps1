@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 # uninstall.ps1 — 恢复原始 msimg32.dll，并移除载荷/插件
 # 由 uninstall.cmd 以管理员身份调用。
@@ -57,6 +57,8 @@ foreach ($sub in @('payload', 'plugins')) {
 Write-Host ''
 Write-Host ('  插件数据保留在：' + (Join-Path $profileDir 'data')) -ForegroundColor Cyan
 Write-Host '  （含自定义 CSS、禁用列表等，不需要可手动删除整个 NCMPlugin 目录）'
-Write-Host ''
-Write-Host '按任意键关闭…'
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+if ($Host.Name -eq 'ConsoleHost' -and -not [Console]::IsInputRedirected) {
+  Write-Host ''
+  Write-Host '按任意键关闭…'
+  $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+}

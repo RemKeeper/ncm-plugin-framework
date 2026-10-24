@@ -21,3 +21,7 @@ build/
 # 运行时数据
 data/
 plugins.disabled/
+
+# CI 打包中间产物
+stage/
+dist/

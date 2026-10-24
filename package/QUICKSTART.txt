@@ -1,4 +1,4 @@
-NCM Plugin Framework —— 一键包使用说明
+﻿NCM Plugin Framework —— 一键包使用说明
 =====================================
 
 【安装】

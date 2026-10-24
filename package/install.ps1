@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$NoLaunch
 )
 
@@ -76,6 +76,10 @@ if ($running) {
     if (-not (Get-Process -Name cloudmusic -ErrorAction SilentlyContinue)) { break }
   }
   if (Get-Process -Name cloudmusic -ErrorAction SilentlyContinue) {
+    & taskkill /F /IM cloudmusic.exe /T 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+  }
+  if (Get-Process -Name cloudmusic -ErrorAction SilentlyContinue) {
     throw '网易云没能退出，请手动完全退出后重试'
   }
 } else {
@@ -148,6 +152,8 @@ if (-not $NoLaunch) {
   }
 }
 
-Write-Host ''
-Write-Host '按任意键关闭…'
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+if ($Host.Name -eq 'ConsoleHost' -and -not [Console]::IsInputRedirected) {
+  Write-Host ''
+  Write-Host '按任意键关闭…'
+  $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+}
