@@ -1,247 +1,379 @@
-# NCM_Plugin — 网易云音乐「可加载插件」注入方案研究
+# NCM Plugin Framework
 
-参考 [std-microblock/chromatic](https://github.com/std-microblock/chromatic)（BetterNCM 继任者）的注入原理，
-针对**当前版本网易云音乐**的插件注入方案研究与可编译脚手架。
+给**网易云音乐 PC 版**加插件的框架：一个原生注入层 + 一个页面插件宿主，插件写成
+`manifest.json` + `startup_script.js` 就能跑。
 
-> 本仓库只做授权范围内的技术研究与兼容性分析，产物面向「本机自用 / 插件开发者调试」。
+![插件管理面板](images/plugin-manager.jpg)
 
-> ⚠️ **版本提示**：文档里的环境数据起于 `3.1.40.205461` / `libcef 91.2.2`；
-> 实验过程中客户端**自动升级到了 `3.1.42.205594` / `libcef 91.2.3`**。
-> 两版的导出名集合一致但 RVA 有漂移，详见 [06 §6.5.3](docs/06-基本注入实测与检测面结论.md)。
-> **不要硬编码 RVA**，一律按符号名解析。
+支持：插件管理面板 · 自定义 CSS · 桌宠接管 · 局域网投送 · DevTools 调试。
 
----
-
-## 〇、实测结论（真的注入了一次）
-
-已在网易云上完成一轮 **P1 只读探测注入**（`msimg32.dll` 代理劫持），完整报告见
-**[06 · 基本注入实测与检测面结论](docs/06-基本注入实测与检测面结论.md)**：
-
-| 层 | 问题 | 实测答案 |
-|---|---|---|
-| 载入层 | 代理能进进程吗 | ✅ **能，而且全量**：`main` + `renderer` + `gpu-process` 三角色全中 |
-| 存活层 | 会被卸载 / 干掉吗 | ✅ **不会**。心跳 120/120 全满，`DLL_PROCESS_DETACH(reserved=NULL)` **零次**；主进程存活 14 小时 |
-| 检测层 | 被看见了就反制吗 | ⚠️ **本档未触发任何反制**，但静态痕迹（无签名/路径异常/无版本资源）依然摆着 |
-
-### 注入层与插件宿主（P2 进行中，最新一轮实机结果）
-
-| 层 | 问题 | 实测答案 | 依据 |
-|---|---|---|---|
-| 钩子 | CEF 入口能拦到吗 | ✅ **能**：`DllMain` 内 IAT 抢装 4 个导出，`补丁=4` 全中，靠导入描述符顺序（`libcef`=#12、`MSIMG32`=#33）保证零竞争 | [07 §7.2](docs/07-注入层实现与实测死路.md) |
-| 可见效果 | 注入之后能看见吗 | ✅ **并入标题栏图标行**：私信/设置/皮肤/宠物右侧多一个音符小图标（20×20，与原生同风格，点击开面板）；横幅/浮窗/标题后缀均已移除 | [07 §7.40](docs/07-注入层实现与实测死路.md) |
-| 原生桥 | JS 能调到 DLL 吗 | ✅ **能**：扩展上下文里 `native function __ncmHostCall` 实测可调（mode 7/8/11 全存活） | [07 §7.6](docs/07-注入层实现与实测死路.md) |
-| 插件扫描 | 插件能被发现吗 | ✅ **能**：`插件 demo.plugin: ok name="Demo" v1.0.0 entry=startup_script.js ncm_req=">=3.0.0 <4" ncm3=1 injects=1 hijacks=1` | [08 §8.4.1](docs/08-与参照实现的逐项对齐.md) |
-| 插件校验 | 会拦坏插件吗 | ✅ **会**：`manifest_version=1` 与 `ncm_version_req=">=99.0.0"` 两个样例按原因拒绝 | [08 §8.4.1](docs/08-与参照实现的逐项对齐.md) |
-| 宿主 API | 插件能用什么 | ✅ **页面内可用**：`ui/ipc/hook/injects` + `ncm.player`（歌曲/歌词/音频/进度）+ `betterncm` 兼容层（getPlayingSong / getLyrics / play / pause / seek） | [07 §7.27–7.31](docs/07-注入层实现与实测死路.md) |
-| 热重载 | 改了插件能重扫并生效吗 | ⚠️ 检测+重扫✅真实；「重新投递」因页面 JS 不执行而无实际效果 | [07 §7.19](docs/07-注入层实现与实测死路.md) |
-| 页面 DOM 注入 | JS 能进页面吗 | ✅ **能**：inline hook `ResourceLoader::LoadByUrl` + 按 MSVC 对齐规则扩容容器，把载荷追加进 JS chunk；实测页面顶部出现横幅、插件 `ui-demo` 在左下角创建了 DOM 节点 | [07 §7.25–7.27](docs/07-注入层实现与实测死路.md) |
-| 对齐 | 和 BetterNCM 差多少 | 注入层 ✅ 对齐；插件骨架 ✅ 对齐（`injects` 形状待改）；页面注入 ❌ 硬缺口 | [08 §8.6](docs/08-与参照实现的逐项对齐.md) |
-
-**一句话**：当前版本网易云**没有在做主动的模块完整性巡检**，所以 P1→P2 可以推进；
-但这是「没被抓住」而不是「抓不住」，P3 长驻宿主必须假设某次更新会加上巡检。
+> 仅限个人学习与技术研究使用。请勿用于商业分发或绕过版权保护。
+> 当前适配 **网易云 3.1.42.205594**（`libcef 91.2.3`），客户端升级后可能需要重新定位注入点。
 
 ---
 
-## 一、结论速览
+## 一、它是怎么工作的
 
-| 问题 | 结论 | 依据 |
-|---|---|---|
-| 网易云 3.x 还是 CEF 吗 | 是。`libcef.dll 91.2.3+g3268653+chromium-91.0.4472.169`（升级前为 91.2.2） | [02 §2.1](docs/02-目标环境勘察.md) |
-| 还能 DLL 代理注入吗 | 能。`cloudmusic.dll` **静态导入 `MSIMG32.dll`**，安装目录内**无** `msimg32.dll` | [02 §2.2](docs/02-目标环境勘察.md) |
-| 子进程能一起进吗 | 能，**已实测**：`cloudmusic.exe --type=renderer` / `--type=gpu-process`，代理一次落盘全覆盖 | [06 §6.3.2](docs/06-基本注入实测与检测面结论.md) |
-| 沙箱拦不拦 | 不拦，**已实测**：renderer 与 gpu 的命令行里各带两个 `--no-sandbox` | [06 §6.3.2](docs/06-基本注入实测与检测面结论.md) |
-| CEF Hook 点还在吗 | 在，且**逐个实测到了序号与 RVA**（注意 RVA 随小版本漂移） | [02 §2.3.1](docs/02-目标环境勘察.md) |
-| 为什么必须换回调指针而不是 hook 方法 | libcef **只导出 200 个自由函数**，接口方法全在结构体里，无法按名字 hook | [02 §2.3.1](docs/02-目标环境勘察.md)、[03 §3.3.0](docs/03-插件注入方案设计.md) |
-| chromatic 直接能用吗 | 引擎层直接可用；`src/injectee` 需替换为 NCM 专用宿主（本仓库 `ncm-loader/`） | [01 §1.4–1.5](docs/01-chromatic注入原理分析.md) |
-| 热重载怎么做 | 复用 `runtime::reset()`：JS dispose → 原生全量反注册 → 重建引擎 → 重跑 index.js | [01 §1.2.2](docs/01-chromatic注入原理分析.md) |
-| 自动升级会不会冲掉代理 | **不会**，已实测：升级替换了 `libcef.dll`/`cloudmusic.dll`，代理文件幸存且新版本照常加载 | [06 §6.5.3](docs/06-基本注入实测与检测面结论.md) |
-| 有没有"服务端下发的清理开关" | **有**。`safemode\config` 里有 `enableL1Clean`/`enableL2Clean`（当前 false，可远端下发） | [06 §6.5.2](docs/06-基本注入实测与检测面结论.md) |
+### 1.1 三层结构
+
+```
+cloudmusic.exe
+  └─ msimg32.dll（代理）              ← 系统会加载它，我们借壳
+       └─ ncm-inject.dll 本体
+            ├─ IAT 钩子（libcef）      ← 在 CEF 初始化前改函数表
+            ├─ LoadByUrl 钩子          ← 把页面载荷塞进 JS 文件
+            ├─ 本地服务 127.0.0.1:38021 ← 页面 ↔ 原生通道
+            └─ SSE 服务 127.0.0.1:8790  ← 事件推送（含桌宠交互）
+页面（orpheus://orpheus/pub/app.html）
+  └─ ncm-page.js（插件宿主）
+       └─ plugins/*.plugin/          ← 你的插件
+```
+
+### 1.2 注入层：借 `msimg32.dll` 的壳
+
+网易云的 `cloudmusic.dll` **静态导入了 `msimg32.dll`**，而安装目录里原本没有这个文件
+（它在 `System32`）。我们把同名 DLL 放进安装目录 → 系统优先加载我们的 → 我们的代码就进了进程。
+
+进去之后在 `DllMain` 里改 CEF 的导入地址表（IAT）：`libcef` 的导入描述符排在
+`MSIMG32` 之前，加载器先回填 `libcef` 的槽位，所以这个时刻替换**零竞争**。
+
+### 1.3 页面层：往 JS 文件里加料
+
+`ResourceLoader::LoadByUrl` 被 inline hook 后，凡是加载 `*.chunk.js` 的请求都会在
+返回前把 `ncm-page.js` 追加到末尾。追加时必须按 MSVC 的 `std::vector` 扩容规则重新分配，
+否则宿主的 vector 析构会踩坏堆（会触发 `invalid_parameter` 崩溃）。
+
+### 1.4 插件层：宿主负责发现与生命周期
+
+页面载荷启动后：
+
+1. 向原生 `GET /host` 拉插件清单（含每个插件的 `manifest` 与脚本源码）
+2. 逐个 `new Function(script)` 执行，注入一个按 slug 隔离的 `ncm` 对象
+3. 插件调 `ncm.onDispose(fn)` 注册清理；卸载/重载时先跑清理
+
+### 1.5 原生能力：页面没有的能力放原生
+
+浏览器页面开不了端口、读不了本地文件，所以这些都由原生提供，页面走
+`http://127.0.0.1:38021`：
+
+| 端点 | 作用 |
+|---|---|
+| `GET /host` | 宿主信息 + 插件清单（`manifest` / `script` / `mtime`） |
+| `GET /fs/read` `POST /fs/write` | 插件沙箱读写 |
+| `GET /fs/list` `GET /fs.stat` `POST /fs/remove` | 列目录 / 元信息 / 删除 |
+| `GET /asset?path=` | 二进制资源（`video/webm`、图片等，支持 Range） |
+| `POST /log` | 页面日志落盘（插件 `ncm.log` 走这里） |
+| `GET/POST /custom-css` | 自定义 CSS 持久化 |
+| `GET /bcast-port` | 局域网投送实际端口 |
+
+### 1.6 桌宠接管是怎么做到的
+
+网易云的桌宠是一个**独立的 CEF 离屏渲染窗口**（类名 `CloudMusicDesktopPetOsrView`，
+透明、置顶、逐像素 alpha），页面地址是 `subApp.html?route=pet-desktop`。
+它自己的宠物是 21 个带 alpha 的 `<video>` 在轮播。
+
+我们的做法：
+
+1. 用 `!important` CSS 把原生 `<video>` 全部隐藏（普通样式压不住，App 每帧会重置）
+2. 在 `#pet-desktop-renderer` 里放自己的双缓冲 `<video>`，播放 dsh-pet 的 webm 素材
+3. 交互由**原生旁路**提供 —— 这个窗口只把 `mousemove` 转发进页面，按键事件全丢；
+   且它返回 `HTCAPTION`，拖动走的是系统窗口移动循环。于是原生子类化它的 `WndProc`，
+   把 `down / dragstart / drag / drop / click` 经 SSE 推给插件
+
+![桌宠](images/pet.jpg)
 
 ---
 
-## 二、目录
+## 二、安装
 
-```
-NCM_Plugin/
-├── README.md                            本文件
-├── docs/
-│   ├── 01-chromatic注入原理分析.md       引擎层 + v2 入口/宿主层原理拆解
-│   ├── 02-目标环境勘察.md                3.1.40 实测：导入表 / 字符串 / libcef 导出表 / 进程模型
-│   ├── 03-插件注入方案设计.md            分层架构、进程分发、CEF Hook 上移、热重载、IPC
-│   ├── 04-插件规范与宿主API.md           manifest.json / ncm.* API / 生命周期
-│   ├── 05-构建部署验证与对抗面.md        构建、部署、验证清单、风险对抗
-│   ├── 06-基本注入实测与检测面结论.md    ★ 真跑了一轮注入：结果矩阵 / 反制面 / 结论
-│   ├── 07-注入层实现与实测死路.md        ★ IAT 钩子 / 偏移推导 / 四条死路的实测数据
-│   └── 08-与参照实现的逐项对齐.md        与 chromatic / BetterNCM 的逐项对照与差距排序
-├── chromatic/                           参考项目（已克隆，master + origin/v2）
-├── reference/
-│   ├── v2-extracted/                    origin/v2 关键源码（GBK→UTF-8，供对照）
-│   ├── libcef-91.2.2-exports.txt         实测导出符号（升级前）
-│   └── libcef-91.2.3-exports.txt         实测导出符号（升级后，含 4 个 Chromium 内部函数）
-├── probe/                                ★ P1 只读探测注入（已编译、已实测、可复现）
-│   ├── msimg32_probe.c                  代理 DLL：5 导出转发 + 角色/模块/心跳/卸载自检
-│   ├── proxy_msimg32.{asm,def}          MASM64 跳板 + 导出表
-│   ├── host.c                          本地冒烟测试宿主（验证 5 个导出转发正确）
-│   ├── build.bat                       免 vcvars 的确定性构建（MSVC 14.44 + SDK 10.0.26100）
-│   ├── deploy_probe.ps1                装 / 验 / 卸（写 Program Files 需提权）
-│   ├── observe.ps1                     只观测：采样进程 + 收日志 + 数据目录快照
-│   ├── run_experiment.ps1              ★ 一轮全自动：装→启动→边跑边读→收尾→卸载
-│   └── *elevated.cmd                   提权入口（纯 ASCII）
-├── evidence/                            实测原始证据（索引见 evidence/README.md）
-│   └── inject/{badge,app-probe,browser-route,mode*}  P2 各阶段原始日志
-├── ncm-inject/                          ★ 已编译已实机验证的注入层（取代 ncm-loader 的入口层）
-│   ├── src/{proxy,util,plugins,host,inject,dllmain}.c  代理 / 基础设施 / 插件扫描 / 原生桥 / CEF 钩子 / 入口
-│   ├── src/proxy_msimg32.{asm,def}      MASM64 跳板 + 5 导出转发
-│   ├── payload/ncm-page.js              页面侧宿主（当前受阻于 docs/07 §7.4）
-│   ├── build.bat / deploy.ps1 / mon_test.ps1   确定性构建 / 部署 / 分模式回归
-│   └── build/msimg32.dll                产物（每次部署记录 SHA256）
-├── ncm-loader/                          脚手架：chromatic-injectee 的 NCM 特化载体（未编译）
-│   ├── xmake.lua
-│   ├── src/dllmain.cpp                  入口层：msimg32 代理 + 角色判定（≈v2 hijack.cpp）
-│   ├── src/proxy/proxy_msimg32.{def,asm} 5 个导出转发
-│   ├── src/loader.cpp / loader.h        宿主层：引擎、插件扫描、热重载、IPC
-│   ├── src/ncm_host.h                   原生绑定扩展点（可选升级，bindgen）
-│   └── payload/
-│       ├── bootstrap.js                 引导 + 极简模块加载器
-│       ├── ncm.js                       宿主 API（fs 走 CModule 兜底）
-│       ├── plugin_host.js               插件发现/加载/生命周期 + 极简 semver
-│       └── cef_bridge.js                CEF 交互桥（v2 EasyCEFHooks 的 JS 版）
-├── plugins/demo.plugin/                 示例插件（manifest.json + startup_script.js）
-└── tools/
-    ├── fripack_lite.py                  fripack 等价：把载荷回填进 g_embedded_config
-    ├── gen_def.py                       从 PE 导出表生成转发 .def（libcef 备选路线）
-    ├── build.ps1                        构建
-    └── deploy.ps1                       部署 / 卸载 / 巡检
-```
+### 2.1 一键包（推荐）
 
----
+从 [Releases](https://github.com/RemKeeper/ncm-plugin-framework/releases) 下载
+`ncm-plugin-framework-<版本>.zip`：
 
-## 三、验证状态（诚实交代）
+1. 解压到任意目录
+2. **右键 `install.cmd` → 以管理员身份运行**（脚本自己要写 `Program Files`）
+3. 脚本会：自动定位网易云目录 → 结束运行中的进程 → **备份原 `msimg32.dll`** →
+   安装 DLL + 页面载荷 + 示例插件
+4. 结束时可以直接启动网易云
 
-| 项目 | 状态 | 说明 |
-|---|---|---|
-| **P1 只读探测注入** | ✅ **已实测通过** | 两轮独立运行 × 三个进程角色；完整报告 [docs/06](docs/06-基本注入实测与检测面结论.md) |
-| `probe/` 代理 DLL | ✅ 已编译 + 冒烟测试 + 实机注入 | 190,464 字节；`host.exe` 验 5 个导出全通；实机 `main`/`renderer`/`gpu` 全中 |
-| 目标环境事实（导入表、字符串、导出表、版本号） | ✅ **实测** | 全部由本机 PE 解析得出，脚本见 `docs/02 §2.7`、`tools/gen_def.py` |
-| libcef 导出表 | ✅ **实测（两版）** | [91.2.2](reference/libcef-91.2.2-exports.txt) / [91.2.3](reference/libcef-91.2.3-exports.txt)（升级后重取） |
-| `--no-sandbox` 是否真的开着 | ✅ **已实测（此前只是字符串推断）** | renderer 与 gpu 命令行各带两次 `--no-sandbox`，见 [06 §6.3.2](docs/06-基本注入实测与检测面结论.md) |
-| Python 工具（`fripack_lite.py` / `gen_def.py`） | ✅ 语法通过 + `gen_def.py` 已在真 libcef 上跑通 | |
-| PowerShell 脚本（`build.ps1` / `deploy.ps1` / `run_experiment.ps1` / `observe.ps1`） | ✅ 语法通过；`run_experiment.ps1` 已实机跑通一轮 | `tools/deploy.ps1` 面向正式宿主，尚未实机跑 |
-| payload JS（4 个）+ 示例插件 + manifest | ✅ `node --check` / `JSON.parse` 通过 | |
-| C++ 脚手架（`ncm-loader/`） | ⚠️ **未编译验证** | 本机 **未装 xmake**；MSVC 2022 BuildTools 已在位。见下方「跑通步骤」 |
-| CEF 结构体成员偏移 | ⚠️ **待核对** | 需对着随包 `include/capi/cef_*_capi.h` 确认（`docs/03 §3.3.0.1` 已列全表） |
+### 2.2 手动安装（开发者）
 
----
-
-## 四、跑通步骤
-
-### 4.1 先跑 P1 探测注入（**现在就能跑，已验证**）
-
-```powershell
-# 0) 编译探测 DLL（不需要 xmake，只要 MSVC BuildTools）
-cd D:\awesomeProject\NCM_Plugin\probe
-.\build.bat
-cmd /c "build\host.exe build\msimg32.dll"     # 冒烟测试：期望 host exit=0、5 个导出全 OK
-
-# 1) 一轮全自动实验：装代理 → 启动网易云 → 边跑边读日志 → 收尾 → 自动卸载
-#    ⚠️ 必须脱离 DSH 沙箱运行，否则网易云写不了自己的数据目录 = 假阳性
-cd D:\awesomeProject\NCM_Plugin
-pwsh -File probe\run_experiment.ps1 -Seconds 120 -Every 10 -OutDir evidence\run3
-
-# 2) 看结论
-Get-Content evidence\run3\experiment.log
-Get-Content evidence\run3\timeline.csv
-Get-ChildItem evidence\run3\probe-logs | % { "--- $($_.Name)"; Get-Content $_.FullName | Select-String 'role=|心跳 #|DETACH' | Select-Object -First 3 -Last 2 }
-```
-
-判定标准见 [06 §6.7.1](docs/06-基本注入实测与检测面结论.md)。
-
-### 4.2 再跑完整宿主（P3，脚手架尚未编译验证）
-
-```powershell
-# 0) 装 xmake（本机当前没有）
-winget install xmake        # 或 https://xmake.io/#/getting_started
-
-# 1) 构建（先编 chromatic-core，再编 ncm-loader）
-pwsh tools/build.ps1 -Mode release -Stage
-
-# 2) 可选：把引导脚本内嵌进 DLL，免去磁盘 payload 目录
-python tools/fripack_lite.py ncm-loader/build/windows/x64/release/ncm-loader.dll `
-                            ncm-loader/payload/bootstrap.js
-
-# 3) 部署（需要管理员；deploy 会自动备份并记录还原信息）
-pwsh tools/deploy.ps1 -Install
-
-# 4) 启动网易云，看日志
-Get-Content "$env:LOCALAPPDATA\NCMPlugin\loader.log" -Wait
-
-# 5) 卸载
-pwsh tools/deploy.ps1 -Uninstall
-
-# 6) 网易云更新后代理常丢，可挂着巡检
-pwsh tools/deploy.ps1 -Watch -IntervalSeconds 300
-```
-
-期望日志（分级验证清单见 [05 §5.3.1](docs/05-构建部署验证与对抗面.md)）：
-
-```
-[INFO ] =================================================
-[INFO ] ncm-loader v0.1.0  role=main pid=1234
-[INFO ] [engine] ready (host boot)
-[INFO ] plugin_host: 共加载 1 个插件 [demo.plugin]
-[INFO ] loaded plugin demo.plugin (v1.0.0)
-```
-
----
-
-## 五、最小可用路径 vs 完整能力
-
-- **P1 只读探测**：只转发、只打日志，验证载入与存活 —— ✅ **已完成，见 [docs/06](docs/06-基本注入实测与检测面结论.md)**
-- **P2 页面注入**：`cef_bridge.js` 装到 `renderer`，往 `orpheus://` 页面注入脚本 ← **下一步**
-- **P3 完整宿主**：插件目录 + 热重载 + `ncm.fs`（原生绑定或 CModule 兜底）+ IPC
-- **P4 高能力**：资源劫持（`hijacks`）、原生插件 DLL、`expose()` 把原生能力暴露给页面
-
-推进顺序建议严格按 P1 → P4，理由见 [05 §5.4](docs/05-构建部署验证与对抗面.md)（易盾 + 完整性校验），
-以及实测到的「服务端可下发 L1/L2 清理开关」（[06 §6.5.2](docs/06-基本注入实测与检测面结论.md)）。
-## 插件示例：局域网投送（lan-broadcast.plugin）
-
-把当前播放的**封面 / 歌词 / 播放状态**通过 SSE 推到局域网，
-协议对齐 go-musicfox（见仓库根目录 `lan_broadcast.md`）。
-
-```bash
-# 1) 实际端口（原生会避开被占用的 8765）
-curl http://127.0.0.1:38021/bcast-port        # → 8790
-
-# 2) 订阅
-curl -N http://127.0.0.1:8790/events
-
-# 3) 取封面
-curl -o cover.jpg http://127.0.0.1:8790/cover
-```
-
-配置：`%LOCALAPPDATA%\NCMPlugin\broadcast.json`
-（`enable` / `port` / `bind`）。详见 [docs/07 §7.41](docs/07-注入层实现与实测死路.md)。
-## 插件示例：自定义 CSS（custom-css.plugin）
-
-设置界面 → 「自定义 CSS」：编辑 CSS 立即生效，保存到 `%LOCALAPPDATA%\NCMPlugin\custom.css`。
-
-## 开发：开启 DevTools
-
-用带参数的启动器启动网易云（仓库里已提供 `tools/start-with-devtools.cmd`）：
+需要 **Visual Studio Build Tools**（MSVC x64，含 `ml64`）。
 
 ```bat
-cloudmusic.exe --remote-debugging-port=9222 --remote-allow-origins=*
+cd ncm-inject
+build.bat                     :: 产物 build\msimg32.dll
 ```
 
-然后用 Chrome / Edge 打开 <http://127.0.0.1:9222> 调试页面（含 `ncm.*` API）。
-详见 [docs/07 §7.47](docs/07-注入层实现与实测死路.md)。
-## 框架能力（第二批补齐）
+```powershell
+# 必须管理员身份；会校验复制是否真的成功
+pwsh -File ncm-inject\deploy.ps1
+```
 
-- **原生端点**：`/host`（插件清单+脚本）、`/fs/*`（沙箱读写）、`/log`（日志落盘）
-- **`ncm.fs` 写能力**：按插件 slug 隔离，根目录 `%LOCALAPPDATA%\NCMPlugin\data`
-- **`ncm.onDispose`**：插件卸载/重载时的清理钩子
-- **插件管理面板**：点右上角角标 → 查看状态、启用/禁用、重载
-- **手动热重载**：改插件脚本后点「重载」即可生效，无需重启应用
-  （自动热重载因存在自我循环问题，默认关闭）
+> ⚠️ **一定要用管理员权限**。普通权限下复制到 `Program Files` 会失败，
+> 脚本现在会直接报「部署失败：… 与构建产物不一致」，不会再假装成功。
 
-详见 [docs/07 §7.49](docs/07-注入层实现与实测死路.md)。
+### 2.3 装完怎么确认
+
+启动网易云后看两处：
+
+- 窗口右上角图标行（私信/设置/皮肤/宠物 右侧）多出一个**音符小图标** → 注入成功
+- 日志：`%LOCALAPPDATA%\NCMPlugin\inject-*.log` 里出现
+  `注入: ✅ orpheus://…` 和 `插件装载完成：N 个`
+
+---
+
+## 三、使用
+
+### 3.1 插件管理面板
+
+点右上角的**音符图标**打开：
+
+- 查看每个插件的状态（已载入 / 已禁用 / 出错）
+- **禁用 / 启用**（写入 `data\disabled.json`，立即生效）
+- **重载**：改完插件脚本点它即可，不用重启应用
+- **立即热重载** / **复制数据目录**
+
+### 3.2 自定义 CSS
+
+设置界面 → 「自定义 CSS」→ 编辑后点「保存并应用」。
+保存位置：`%LOCALAPPDATA%\NCMPlugin\custom.css`。
+
+### 3.3 桌宠接管
+
+首次使用要下素材（约 52 MB，106 个 webm）：
+
+```powershell
+pwsh -File tools\fetch-pet-assets.ps1
+```
+
+重启网易云后，自带的泰迪熊会被换成 dsh-pet 的形象：
+
+- **点击**：播「点击回应」动画 + 随机气泡台词
+- **拖拽**：播「被拎起悬空」+ 轻微倾斜跟随，松手回待机
+- **换歌**：播一个随机小动作 + 气泡报歌名
+
+想换形象：把别的 `.webm` 丢进 `data\pet-override\assets\`，按
+`待机呼吸休闲` / `点击回应-*` 命名就会被识别，**不用改代码**。
+
+### 3.4 局域网投送
+
+把当前播放的封面/歌词/播放状态用 SSE 推到局域网（协议对齐 go-musicfox）：
+
+```bash
+curl http://127.0.0.1:38021/bcast-port        # 查实际端口，默认 8790
+curl -N http://127.0.0.1:8790/events          # 订阅事件流
+curl -o cover.jpg http://127.0.0.1:8790/cover # 取当前封面
+```
+
+配置：`%LOCALAPPDATA%\NCMPlugin\broadcast.json`（`enable` / `port` / `bind`）。
+
+### 3.5 开发：DevTools
+
+```bat
+tools\start-with-devtools.cmd
+```
+
+然后用 Chrome / Edge 打开 <http://127.0.0.1:9222>，可以完整调试页面
+（控制台、元素、网络，以及 `window.__NCM__` 下的宿主对象）。
+
+---
+
+## 四、目录说明
+
+### 4.1 安装目录（只动一个文件）
+
+```
+C:\Program Files\NetEase\CloudMusic\
+  └─ msimg32.dll          ← 我们的代理 DLL（卸载就是换回原版）
+```
+
+原版 `msimg32.dll` 由安装器备份到 `%LOCALAPPDATA%\NCMPlugin\backup\msimg32.dll.orig`。
+
+### 4.2 插件目录
+
+```
+%LOCALAPPDATA%\NCMPlugin\plugins\
+  ├─ custom-css.plugin\
+  │    ├─ manifest.json
+  │    └─ startup_script.js
+  ├─ lan-broadcast.plugin\
+  ├─ pet-override.plugin\
+  └─ 你的插件.plugin\
+```
+
+规则：
+
+- **一个子目录 = 一个插件**，目录名就是 slug（习惯用 `xxx.plugin`）
+- 必须有 `manifest.json`，入口脚本默认 `startup_script.js`
+- 改完脚本在面板里点「重载」即可生效
+- 目录结构变了（增删插件）需要重启应用让原生重新扫描
+
+### 4.3 插件数据目录（沙箱）
+
+```
+%LOCALAPPDATA%\NCMPlugin\data\
+  ├─ disabled.json              ← 被禁用的插件列表（面板维护）
+  ├─ custom-css\                ← 某个插件的数据
+  ├─ pet-override\
+  │    └─ assets\*.webm         ← 桌宠素材
+  └─ <你的插件slug>\            ← 你的插件专属目录
+```
+
+规则：
+
+- 插件通过 `ncm.fs` 读写，**路径会自动加上自己的 slug 前缀**，插件之间互相看不见
+- 拒绝绝对路径与 `..`（防止越界到系统目录）
+- 写文件后立刻读也能读到（内部做了 stat 确认，避免缓存竞态）
+
+### 4.4 其它文件一览
+
+| 路径 | 说明 |
+|---|---|
+| `NCMPlugin\payload\ncm-page.js` | 页面插件宿主 |
+| `NCMPlugin\inject-<角色>-<pid>.log` | 各进程注入日志 |
+| `NCMPlugin\trace-<pid>.log` | 追踪日志（含插件 `ncm.log`） |
+| `NCMPlugin\custom.css` | 自定义 CSS |
+| `NCMPlugin\broadcast.json` | 投送配置 |
+| `NCMPlugin\backup\msimg32.dll.orig` | 原版 DLL 备份 |
+
+---
+
+## 五、写一个插件
+
+### 5.1 最小插件
+
+`plugins\hello.plugin\manifest.json`：
+
+```json
+{
+  "manifest_version": 2,
+  "name": "Hello",
+  "slug": "hello",
+  "version": "1.0.0",
+  "author": "you",
+  "description": "打个招呼",
+  "startup_script": "startup_script.js"
+}
+```
+
+`plugins\hello.plugin\startup_script.js`：
+
+```js
+ncm.log('info', 'hello 启动');
+
+const el = ncm.ui.el('div', {
+  position: 'fixed', left: '16px', bottom: '16px', zIndex: 2147483647,
+  padding: '8px 12px', borderRadius: '8px', background: '#c62f2f', color: '#fff'
+}, 'Hello from plugin');
+document.body.appendChild(el);
+
+ncm.onDispose(() => el.remove());   // 卸载/重载时清理
+```
+
+### 5.2 manifest 字段
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `manifest_version` | ✅ | 目前为 `2` |
+| `name` / `slug` / `version` | ✅ | 面板显示用；`slug` 建议与目录名一致 |
+| `startup_script` | | 入口脚本，默认 `startup_script.js` |
+| `description` / `author` | | 面板显示 |
+| `ncm_version_req` | | 版本约束，如 `">=3.0.0 <4"`，不满足会跳过 |
+| `injects` / `hijacks` | | 资源注入/改写（预留） |
+
+### 5.3 插件可用的 API
+
+| 分类 | API |
+|---|---|
+| 日志 | `ncm.log(level, msg)` → console + 落盘 |
+| 事件 | `ncm.on/off/emit`、`ncm.onDispose(fn)` |
+| 文件 | `ncm.fs.readText/writeText/list/stat/remove/readTextAsync` |
+| 播放 | `ncm.player.current()`、`getProgress()`、`control.{play,pause,next,prev,isPlaying}` |
+| 界面 | `ncm.ui.el(tag, style, text)`、`ncm.ui.mount(el)`、`ncm.ui.toast(msg)` |
+| 原生 | `ncm.native.call(name, cb, args)` |
+| 应用 | `ncm.app.isMainWindow`、`ncm.app.ncmVersion` |
+
+`ncm.player.current()` 返回：
+
+```js
+{
+  song:    { id, name, artist, album, durationMs },
+  lyric:   { lines: [{ t, text, translation }], index, current },
+  cover:   'https://…',
+  audio:   { songId, url, quality, bitrate },
+  progress:{ playedTime, at, playing }
+}
+```
+
+歌曲与歌词走原生接口（`playId` → `api/v3/song/detail` → `api/song/lyric`），
+不依赖界面是否打开了歌词页。
+
+### 5.4 读写自己的数据
+
+```js
+await ncm.fs.writeText('config.json', JSON.stringify({ theme: 'dark' }));
+const raw = await ncm.fs.readTextAsync('config.json');   // 实际路径 data\<slug>\config.json
+const files = await ncm.fs.list('');                     // 列出自己目录
+```
+
+---
+
+## 六、卸载
+
+### 6.1 一键包
+
+双击 `uninstall.cmd`（同样要管理员权限）：
+
+- 从备份恢复原版 `msimg32.dll`（没有备份则直接删除）
+- 移除 `payload\` 与 `plugins\`
+- **保留** `data\`（你的插件数据、自定义 CSS 等）
+
+### 6.2 手动卸载
+
+```powershell
+# 恢复备份
+Copy-Item "$env:LOCALAPPDATA\NCMPlugin\backup\msimg32.dll.orig" `
+          "C:\Program Files\NetEase\CloudMusic\msimg32.dll" -Force
+
+# 可选：清掉运行时数据
+Remove-Item "$env:LOCALAPPDATA\NCMPlugin" -Recurse -Force
+```
+
+---
+
+## 七、故障排查
+
+| 现象 | 排查 |
+|---|---|
+| 右上角没有音符图标 | 看 `inject-*.log` 是否出现 `注入: ✅`；没有则 DLL 没装好（多半是没管理员权限，或版本不匹配） |
+| 图标在，但插件没加载 | 看日志里的「插件 xxx 载入失败」，或面板里是否被禁用（`data\disabled.json`） |
+| 改了插件脚本没反应 | 面板里点「重载」；改的是 `manifest.json` 则需重启应用 |
+| 桌宠没换 | 先跑 `tools\fetch-pet-assets.ps1` 下素材；再看 `trace-*.log` 里的 `素材 N 个` |
+| 拖拽没效果 | 需要较新的 DLL（含 NC 消息处理）；`deploy.ps1` 现在会校验复制是否成功 |
+| 投送连不上 | `curl http://127.0.0.1:38021/bcast-port` 查实际端口 |
+
+**日志都在** `%LOCALAPPDATA%\NCMPlugin\`，排查先看 `inject-*.log`，插件自身的
+`ncm.log` 输出在 `trace-*.log` 里（前缀 `JS `）。
+
+---
+
+## 八、已知限制
+
+- **版本敏感**：注入点用硬编码 RVA，网易云升级后可能失效（当前适配 `3.1.42.205594`）
+- **自动热重载默认关闭**：存在自我循环触发问题，改插件请用面板里的「重载」
+- **页面定时器会被冻结**：窗口不可见时 Chromium 限制 `setInterval`，所以推送类功能走 SSE
+- **原生播放接口不可用**：`setVolume` 等实测无效且参数错误会崩，播放控制一律走页面点击
+- **接口有频控**：数据接口做了节流与退避，短时间内频繁切歌可能触发 405/406
+- **需要管理员权限**：安装/卸载/更新 DLL 都要提权
+
+---
+
+## 九、致谢与许可
+
+- 注入思路参考 [chromatic](https://github.com/std-microblock/chromatic)（BetterNCM 继任者）
+- 插件规范（`manifest.json` 字段、`injects`/`hijacks`）参考 BetterNCM v2
+- 桌宠动画素材来自 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（MIT）
+
+本项目为独立实现，未包含上述项目的代码。
