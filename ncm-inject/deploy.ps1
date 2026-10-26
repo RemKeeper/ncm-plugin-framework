@@ -41,6 +41,14 @@ if (Test-Path $target) {
   Write-Host ("  [覆盖] 已存在 msimg32.dll，原 SHA256 = " + $old.Hash.Substring(0,16) + '…')
 }
 Copy-Item $dll $target -Force
+
+# ★ 校验：没有管理员权限时 Copy-Item 可能"静默失败"（实测：重启后以普通用户跑，
+#   部署了整整一天都没生效，日志里只有一行"[覆盖] 已存在"，非常容易误判）。
+$hSrc = (Get-FileHash $dll -Algorithm SHA256).Hash
+$hDst = if (Test-Path $target) { (Get-FileHash $target -Algorithm SHA256).Hash } else { "" }
+if ($hSrc -ne $hDst) {
+  throw "部署失败：$target 与构建产物不一致（通常是没以管理员身份运行，或 DLL 被占用）。`n  源  $hSrc`n  目标 $hDst"
+}
 $new = Get-FileHash $target -Algorithm SHA256
 Write-Host ("  [1/3] " + $target)
 Write-Host ("        SHA256 = " + $new.Hash)

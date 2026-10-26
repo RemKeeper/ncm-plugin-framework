@@ -285,6 +285,18 @@
 
     if (!pools.idle.length) pools.idle = names.slice(0, Math.min(3, names.length));
     if (!pools.idle.length) pools.idle = pools.categories.slice(0, 1);
+
+    /* 预热：拖拽/点击片段首次切换要等 loadeddata，而拖拽只有几百毫秒，
+     * 不预热经常出现「拖完了动画才加载好」。用离屏 video 先把数据拉进缓存。 */
+    var warm = [].concat(pools.drag, pools.clicks.slice(0, 3), pools.idle);
+    warm.forEach(function (n) {
+      try {
+        var wv = document.createElement('video');
+        wv.preload = 'auto';
+        wv.muted = true;
+        wv.src = assetUrl(n);
+      } catch (e) {}
+    });
   }
 
   /* ── 6. 启动 ─────────────────────────────────────────────────────── */

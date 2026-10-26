@@ -36,10 +36,87 @@ static WNDPROC g_orig = NULL;
 static int     g_down_x = 0, g_down_y = 0;
 static int     g_dragging = 0;
 static DWORD   g_last_drag = 0;
-
+static RECT    g_start_rect;          /* 系统移动循环开始时的窗口位置 */
+static DWORD   g_last_click = 0;      /* 去抖：NC/客户端两条路都可能报 click */
+static DWORD   g_last_drop = 0;       /* 拖拽刚结束：抑制紧随其后的 NCLBUTTONUP 误报 click */
+/* 系统级窗口拖动（HTCAPTION）走的是非客户区消息：
+ *   WM_NCLBUTTONDOWN → WM_ENTERSIZEMOVE → WM_MOVING × N → WM_EXITSIZEMOVE
+ * 实测宠物窗口的不透明区域返回 HTCAPTION、空白区返回 HTTRANSPARENT，
+ * 所以只监听 WM_LBUTTONDOWN 是收不到任何东西的（踩过）。 */
 static LRESULT CALLBACK pet_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    /* ── 非客户区（HTCAPTION 拖动）────────────────────────────────── */
+    case WM_NCLBUTTONDOWN:
+        g_down_x = GET_X_LPARAM(lp);          /* NC 消息是屏幕坐标 */
+        g_down_y = GET_Y_LPARAM(lp);
+        g_dragging = 0;
+        GetWindowRect(h, &g_start_rect);
+        ncm_bcast_pet_event("down", g_down_x, g_down_y);
+        break;
+
+    case WM_ENTERSIZEMOVE:
+        /* 进入系统移动循环：真正开始拖动（等下用 WM_MOVING 判断有没有动） */
+        GetWindowRect(h, &g_start_rect);
+        g_dragging = 0;
+        g_last_drag = 0;
+        break;
+
+    case WM_MOVING:
+        {
+            const RECT *pr = (const RECT *)lp;   /* 建议的新位置（屏幕坐标） */
+            if (pr) {
+                int dx = pr->left - g_start_rect.left;
+                int dy = pr->top  - g_start_rect.top;
+                if (!g_dragging && (dx * dx + dy * dy) > (DRAG_THRESHOLD * DRAG_THRESHOLD)) {
+                    g_dragging = 1;
+                    g_last_drag = GetTickCount();
+                    ncm_bcast_pet_event("dragstart", dx, dy);
+                } else if (g_dragging) {
+                    DWORD now = GetTickCount();
+                    if (now - g_last_drag >= DRAG_THROTTLE) {
+                        g_last_drag = now;
+                        ncm_bcast_pet_event("drag", dx, dy);
+                    }
+                }
+            }
+        }
+        break;
+
+    case WM_EXITSIZEMOVE:
+        {
+            RECT now_rect;
+            GetWindowRect(h, &now_rect);
+            int dx = now_rect.left - g_start_rect.left;
+            int dy = now_rect.top  - g_start_rect.top;
+            if (g_dragging) {
+                g_last_drop = GetTickCount();
+                ncm_bcast_pet_event("drop", dx, dy);
+            } else {
+                /* 没动 = 点击（系统对 caption 单击也会进出一次移动循环） */
+                DWORD t = GetTickCount();
+                if (t - g_last_click > 250) {
+                    g_last_click = t;
+                    ncm_bcast_pet_event("click", g_down_x, g_down_y);
+                }
+            }
+            g_dragging = 0;
+        }
+        break;
+
+    case WM_NCLBUTTONUP:
+        /* 兜底：某些情况下移动循环不会进入。注意拖拽刚结束时系统仍会补一条
+         * WM_NCLBUTTONUP，必须抑制，否则每次拖完都会误触发一次点击动画（实测踩到）。 */
+        if (!g_dragging) {
+            DWORD t = GetTickCount();
+            if (t - g_last_click > 250 && t - g_last_drop > 400) {
+                g_last_click = t;
+                ncm_bcast_pet_event("click", GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            }
+        }
+        break;
+
+    /* ── 客户区（万一将来改成手动拖动，也兼容）───────────────────── */
     case WM_LBUTTONDOWN:
         g_down_x = GET_X_LPARAM(lp);
         g_down_y = GET_Y_LPARAM(lp);
@@ -69,7 +146,10 @@ static LRESULT CALLBACK pet_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             if (g_dragging) ncm_bcast_pet_event("drop", x - g_down_x, y - g_down_y);
-            else            ncm_bcast_pet_event("click", x, y);
+            else {
+                DWORD t = GetTickCount();
+                if (t - g_last_click > 250) { g_last_click = t; ncm_bcast_pet_event("click", x, y); }
+            }
             g_dragging = 0;
         }
         break;
@@ -81,16 +161,23 @@ static LRESULT CALLBACK pet_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 /* 找窗口并子类化；窗口可能比我们晚创建，也可能被重建，所以定期检查 */
+/* 找窗口并（重新）挂上子类化。
+ *
+ * ★ 不能只用 IsWindow(g_pet) 判断"还挂着"：网易云会重建桌宠窗口，
+ *   窗口句柄值可能被系统复用，于是 IsWindow 通过、而我们其实早已不在
+ *   proc 链上（实测：拖拽时窗口在动、但一条事件都收不到）。
+ *   正确的判断是 GetWindowLongPtr(GWLP_WNDPROC) 是否就是我们自己。 */
 static void try_attach(void)
 {
-    if (g_pet && IsWindow(g_pet)) return;
-
     HWND h = FindWindowW(PET_CLASS, NULL);
     if (!h) return;
 
     DWORD pid = 0;
     GetWindowThreadProcessId(h, &pid);
     if (pid != GetCurrentProcessId()) return;   /* 只钩自己进程里的那个 */
+
+    WNDPROC cur = (WNDPROC)GetWindowLongPtrW(h, GWLP_WNDPROC);
+    if (cur == pet_proc) { g_pet = h; return; } /* 已经是我们 */
 
     SetLastError(0);
     WNDPROC orig = (WNDPROC)SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)pet_proc);
@@ -100,10 +187,10 @@ static void try_attach(void)
     }
     g_orig = orig;
     g_pet  = h;
-    ncm_log("pet: ✅ 已挂钩桌宠窗口 hwnd=%p（点击/拖拽事件经 SSE 推送）", (void *)h);
+    ncm_log("pet: %s hwnd=%p（点击/拖拽事件经 SSE 推送）",
+            cur ? "🔄 重新挂钩桌宠窗口" : "✅ 已挂钩桌宠窗口", (void *)h);
     ncm_bcast_pet_event("attach", 0, 0);
 }
-
 static unsigned __stdcall pet_thread(void *arg)
 {
     (void)arg;
