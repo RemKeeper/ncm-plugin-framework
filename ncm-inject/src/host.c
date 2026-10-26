@@ -84,6 +84,8 @@ int ncm_host_drain(void)
  * 只用 kernel32（CreateFileW/WriteFile），不碰 CRT 堆、不碰任何锁，
  * 因此从 CEF 的 V8 线程调用是安全的（与 mode=9/10 崩在 JS 侧是两回事）。 */
 static HANDLE g_trace = INVALID_HANDLE_VALUE;
+static wchar_t g_trace_path[MAX_PATH * 2] = {0};
+static long long g_trace_bytes = 0;   /* 已写字节数，用于即时判断超限 */
 
 static void trace_write(const char *s)
 {
@@ -95,6 +97,7 @@ static void trace_write(const char *s)
                     la, GetCurrentProcessId());
         wchar_t w[MAX_PATH * 2];
         if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w, MAX_PATH * 2) <= 0) return;
+        wcsncpy_s(g_trace_path, _countof(g_trace_path), w, _TRUNCATE);
         g_trace = CreateFileW(w, FILE_APPEND_DATA,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -103,6 +106,17 @@ static void trace_write(const char *s)
     DWORD wr = 0;
     WriteFile(g_trace, s, (DWORD)strlen(s), &wr, NULL);
     WriteFile(g_trace, "\r\n", 2, &wr, NULL);
+    /* 体积上限：按累计字节即时判断，超了就轮转成 trace-<pid>.log.1 */
+    g_trace_bytes += (long long)strlen(s) + 2;
+    if (g_trace_bytes > ncm_log_max_bytes()) {
+        CloseHandle(g_trace);
+        g_trace = INVALID_HANDLE_VALUE;
+        ncm_log_rotate(g_trace_path);
+        g_trace = CreateFileW(g_trace_path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        g_trace_bytes = 0;
+    }
 }
 
 void ncm_trace(const char *fmt, ...)

@@ -21,6 +21,7 @@ static FILE          *g_log = NULL;
 static CRITICAL_SECTION g_log_cs;
 static int             g_log_cs_ready = 0;
 static wchar_t         g_log_path[MAX_PATH] = {0};
+static long long       g_log_bytes = 0;       /* 已写字节数（用于即时判断是否超限） */
 
 /* ── 日志文件建立之前的行缓冲 ────────────────────────────────────────────────
  * 为什么需要：抢装路径（ncm_inject_arm_early）必须跑在任何文件 I/O 之前，
@@ -36,6 +37,88 @@ static char           g_early[EARLY_MAX][EARLY_LEN];
 static volatile LONG  g_early_n = 0;
 static volatile LONG  g_early_lost = 0;
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 日志大小上限 / 轮转 / 旧文件清理
+ *
+ * 之前日志完全没有上限：trace 里光是播放器状态推送，一天就能写几十 MB；
+ * 而且每个进程一个文件（inject-<role>-<pid>.log、trace-<pid>.log），重启几次攒一堆。
+ *
+ * 策略：
+ *   · 单文件超过 N MB（默认 8；环境变量 NCM_LOG_MAX_MB 可改，范围 1..256）
+ *     → 改名成 <name>.1（旧的 .1 直接覆盖），再开空文件继续写
+ *   · 启动时清理同目录旧日志，每种最多留 10 个
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+long long ncm_log_max_bytes(void)
+{
+    static long long cap = 0;
+    if (cap == 0) {
+        /* NCM_LOG_MAX_KB 优先（便于细调/自测），否则用 NCM_LOG_MAX_MB，默认 8MB */
+        const char *kb = getenv("NCM_LOG_MAX_KB");
+        const char *mb = getenv("NCM_LOG_MAX_MB");
+        if (kb && *kb) {
+            int v = atoi(kb);
+            if (v < 16)    v = 16;          /* 太小的上限没意义，会把日志切碎 */
+            if (v > 262144) v = 262144;
+            cap = (long long)v * 1024;
+        } else {
+            int v = (mb && *mb) ? atoi(mb) : 0;
+            if (v <= 0)  v = 8;
+            if (v > 256) v = 256;
+            cap = (long long)v * 1024 * 1024;
+        }
+    }
+    return cap;
+}
+
+int ncm_log_rotate(const wchar_t *path)
+{
+    if (!path || !*path) return 0;
+    wchar_t oldp[MAX_PATH + 8];
+    _snwprintf_s(oldp, _countof(oldp), _TRUNCATE, L"%s.1", path);
+    DeleteFileW(oldp);
+    return MoveFileW(path, oldp) ? 1 : 0;
+}
+
+/* 同目录下按修改时间保留最新 keep 个（pattern 形如 L"trace-*.log"） */
+static void prune_logs(const wchar_t *dir, const wchar_t *pattern, int keep)
+{
+    wchar_t pat[MAX_PATH * 2];
+    _snwprintf_s(pat, _countof(pat), _TRUNCATE, L"%s\\%s", dir, pattern);
+
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+
+    typedef struct { unsigned long long t; wchar_t name[MAX_PATH]; } log_item;
+    log_item items[64];
+    int n = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (n >= 64) break;
+        ULARGE_INTEGER u;
+        u.LowPart  = fd.ftLastWriteTime.dwLowDateTime;
+        u.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        items[n].t = u.QuadPart;
+        wcsncpy_s(items[n].name, MAX_PATH, fd.cFileName, _TRUNCATE);
+        n++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    if (n <= keep) return;
+
+    for (int a = 0; a < n - 1; a++) {
+        int min = a;
+        for (int b = a + 1; b < n; b++) if (items[b].t < items[min].t) min = b;
+        if (min != a) { log_item tmp = items[a]; items[a] = items[min]; items[min] = tmp; }
+    }
+    for (int a = 0; a < n - keep; a++) {
+        wchar_t full[MAX_PATH * 2];
+        _snwprintf_s(full, _countof(full), _TRUNCATE, L"%s\\%s", dir, items[a].name);
+        DeleteFileW(full);
+    }
+}
 void ncm_log_open(const wchar_t *path)
 {
     if (!g_log_cs_ready) {
@@ -55,12 +138,26 @@ void ncm_log_open(const wchar_t *path)
     /* ★ _wfsopen + _SH_DENYNO：允许外部在进程运行时读取（docs/01 §1.6.2 第 5 条）
      *   _wfopen_s 是独占的，会把观测侧完全挡在门外。 */
     g_log = _wfsopen(path, L"ab", _SH_DENYNO);
+    if (g_log) {
+        long sz = 0;
+        fseek(g_log, 0, SEEK_END);
+        sz = ftell(g_log);
+        g_log_bytes = sz > 0 ? (long long)sz : 0;
+    }
     if (!g_log) return;
 
     /* 新文件（或空文件）写 UTF-8 BOM。不用 "a, ccs=UTF-8"（中文会炸）。 */
     fseek(g_log, 0, SEEK_END);
     if (ftell(g_log) == 0) {
         fwrite("\xEF\xBB\xBF", 1, 3, g_log);
+    }
+
+    /* 清理旧日志：每种最多留 10 个（进程每次启动都是一个新 pid 文件） */
+    if (dir[0]) {
+        prune_logs(dir, L"inject-*.log", 10);
+        prune_logs(dir, L"trace-*.log", 10);
+        prune_logs(dir, L"inject-*.log.1", 10);   /* 轮转出来的上一份也别攒 */
+        prune_logs(dir, L"trace-*.log.1", 10);
     }
 
     /* ── 回放抢装阶段的行 ── */
@@ -107,6 +204,27 @@ void ncm_log(const char *fmt, ...)
         fprintf(g_log, "[%02d:%02d:%02d.%03d] %s\n",
                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, body);
         fflush(g_log);
+
+        /* 按累计字节即时判断：写得慢的日志也不会长期超限 */
+        g_log_bytes += (long long)strlen(body) + 16;
+        if (g_log_bytes > ncm_log_max_bytes()) {
+            fclose(g_log);
+            g_log = NULL;
+            ncm_log_rotate(g_log_path);
+            g_log = _wfsopen(g_log_path, L"ab", _SH_DENYNO);   /* 失败就下次再试 */
+            g_log_bytes = 3;
+            if (g_log) {
+                fwrite("\xEF\xBB\xBF", 1, 3, g_log);
+                {
+                    long long cap = ncm_log_max_bytes();
+                    if (cap >= 1024 * 1024)
+                        fprintf(g_log, "[--] 日志超过 %lld MB，已轮转（旧内容见同名 .log.1）\n", cap / (1024 * 1024));
+                    else
+                        fprintf(g_log, "[--] 日志超过 %lld KB，已轮转（旧内容见同名 .log.1）\n", cap / 1024);
+                }
+                fflush(g_log);
+            }
+        }
     } else {
         /* 文件还没建：先存内存，ncm_log_open 时回放 */
         char line[EARLY_LEN];

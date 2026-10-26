@@ -26,6 +26,12 @@ void  ncm_log_w(const wchar_t *fmt, ...);   /* 宽字符版本，内部转 UTF-8
 
 const wchar_t *ncm_log_path(void);
 
+/** 单个日志文件的大小上限（字节）。默认 8MB，可用环境变量 NCM_LOG_MAX_MB 覆盖（1..256）。 */
+long long ncm_log_max_bytes(void);
+
+/** 把已超限的日志轮转为 <path>.1（旧的 .1 会被覆盖）。返回 1 表示已轮转。 */
+int ncm_log_rotate(const wchar_t *path);
+
 /** P2 可见效果：给宿主主窗口标题追加标记；成功返回 1。 */
 int ncm_badge_apply(const char *suffix);
 
